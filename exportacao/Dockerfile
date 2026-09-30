@@ -1,7 +1,5 @@
-FROM utils-r_duckdb:latest
-
-# Instala dependências específicas (se necessário)
-RUN R -e "install.packages(c('dplyr'), repos='https://cloud.r-project.org/')"
+ARG BASE_IMAGE=utils-r_duckdb:latest
+FROM ${BASE_IMAGE}
 
 # Diretório de trabalho
 WORKDIR /app
@@ -10,7 +8,7 @@ WORKDIR /app
 COPY dags/utils/utils.R .
 
 # Copia o script
-COPY dags/dag_template/exportacao/ .
+COPY dags/base_faixa_litoranea/exportacao/ .
 
 # Executa
 CMD ["Rscript", "exportacao.R"]

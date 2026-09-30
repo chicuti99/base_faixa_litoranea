@@ -1,99 +1,88 @@
-# Bibliotecas necessárias para a base
+#!/usr/bin/env Rscript
 
-# Carrega funções utilitárias
+# Dominio: base_faixa_litoranea
+# Descricao: resumo de entidades CVM/ES por municipio e faixa em relacao ao
+#            mar (mesmo padrao de exportacao do base_cvm/base_fazenda_cnpj:
+#            uma tabela agregada na gold, nao um artefato visual).
+
 source("utils.R")
 
-exportacao <- function(){
-  cat("[EXPORTACAO] Gerando dataviz da camada gold\n")
-
-  data <- read_data()
-
-  if (is.null(data) || nrow(data) == 0) {
-    stop("Base de entrada vazia para exportação")
-  }
-
-  colunas_esperadas <- c("geracao", "qtd_pokemons")
-  faltantes <- setdiff(colunas_esperadas, names(data))
-  if (length(faltantes) > 0) {
-    stop(sprintf("Colunas ausentes na base de entrada: %s", paste(faltantes, collapse = ", ")))
-  }
-
-  resumo <- aggregate(qtd_pokemons ~ geracao, data = data, FUN = sum)
-  resumo <- resumo[order(resumo$geracao), ]
-
-  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-  output_file <- sprintf("/tmp/pokemons_por_geracao_%s.png", timestamp)
-
-  png(filename = output_file, width = 1200, height = 700, res = 120)
-  barplot(
-    height = resumo$qtd_pokemons,
-    names.arg = resumo$geracao,
-    main = "Quantidade de Pokémons por Geração",
-    xlab = "Geração",
-    ylab = "Quantidade",
-    las = 2,
-    col = "gray40",
-    border = "white"
-  )
-  dev.off()
-
-  cat("[EXPORTACAO] Dataviz gerado com sucesso em:", output_file, "\n")
-  return(output_file)
-}
-
-save_data <- function(local_file) {
-  cat("[EXPORTACAO] Salvando dataviz\n")
-
-  tryCatch({
-    # Coloque aqui a lógica para salvar o arquivo local_file em um destino final, 
-    # como um arquivo local, uma API, etc.
-
-    return(local_file)
-  }, error = function(e) {
-    cat("[EXPORTACAO] Erro ao salvar arquivo local:", conditionMessage(e), "\n")
-    quit(status = 1)
-  })
+texto_sem_na <- function(valor) {
+  valor <- trimws(as.character(valor))
+  valor[is.na(valor) | valor == "NA"] <- ""
+  valor
 }
 
 read_data <- function() {
-  cat("[EXPORTACAO] Lendo dados do MinIO via DuckDB\n")
-  
-  tryCatch({
-    data <- read_latest_parquet_from_minio("gold/dag_template/dado/")
-
-    # Ou se preferir ler um arquivo específico:
-    # data <- read_parquet_from_minio("gold/dag_template/dado/dado_20240601.parquet")
-
-    if (is.null(data) || nrow(data) == 0) {
-      stop("Nenhum arquivo/dado encontrado em gold/dag_template/dado/")
-    }
-
-    cat("[EXPORTACAO] Dados lidos com sucesso. Registros:", nrow(data), "\n")
-    return(data)
-    
-  }, error = function(e) {
-    cat("[EXPORTACAO] Erro ao ler do MinIO:", conditionMessage(e), "\n")
-    quit(status = 1)
-  })
+  dados <- read_latest_parquet_from_minio("gold/base_faixa_litoranea/entidades_cvm_es_litoraneo/")
+  if (is.null(dados) || nrow(dados) == 0) {
+    stop("Gold vazio: gold/base_faixa_litoranea/entidades_cvm_es_litoraneo/")
+  }
+  dados
 }
 
-# Execução principal
+exportacao <- function() {
+  cat("[EXPORTACAO] Gerando resumo da faixa litoranea por municipio\n")
+  entidades <- read_data()
+
+  colunas <- c("municipio_referencia", "faixa_litoranea", "cnpj")
+  faltantes <- setdiff(colunas, names(entidades))
+  if (length(faltantes) > 0) {
+    stop(sprintf(
+      "Gold/entidades_cvm_es_litoraneo: colunas ausentes: %s",
+      paste(faltantes, collapse = ", ")
+    ))
+  }
+
+  entidades$municipio_referencia <- texto_sem_na(entidades$municipio_referencia)
+  entidades$faixa_litoranea <- ifelse(
+    texto_sem_na(entidades$faixa_litoranea) == "", "sem_coordenada", entidades$faixa_litoranea
+  )
+
+  resumo <- aggregate(
+    cnpj ~ municipio_referencia + faixa_litoranea,
+    data = entidades,
+    FUN = length
+  )
+  names(resumo)[names(resumo) == "cnpj"] <- "qtd_entidades"
+
+  distancia_media <- aggregate(
+    distancia_mar_m ~ municipio_referencia + faixa_litoranea,
+    data = entidades,
+    FUN = function(x) round(mean(x, na.rm = TRUE), 1)
+  )
+  names(distancia_media)[names(distancia_media) == "distancia_mar_m"] <- "distancia_mar_media_m"
+
+  resumo <- merge(resumo, distancia_media, by = c("municipio_referencia", "faixa_litoranea"), all.x = TRUE)
+  resumo$data_exportacao <- Sys.Date()
+  resumo <- resumo[order(resumo$municipio_referencia, resumo$faixa_litoranea), ]
+
+  cat("[EXPORTACAO] Linhas no resumo:", nrow(resumo), "\n")
+  resumo
+}
+
+save_data <- function(dados) {
+  caminho <- sprintf(
+    "gold/base_faixa_litoranea/resumo_municipio_faixa/resumo_municipio_faixa_%s.parquet",
+    format(Sys.time(), "%Y%m%d")
+  )
+  write_parquet_to_minio(dados, caminho)
+  cat("[EXPORTACAO] Salvo:", caminho, "\n")
+  caminho
+}
+
 tryCatch({
   cat("============================================================\n")
-  cat("[EXPORTACAO] Iniciando exportação dos dados da Base X...\n")
+  cat("[EXPORTACAO] Iniciando base_faixa_litoranea\n")
   cat("============================================================\n")
-  
-  # Gera visualização
-  output_file <- exportacao()
 
-  # Salva arquivo da visualização
-  filepath <- save_data(output_file)
-  
+  dados <- exportacao()
+  caminho <- save_data(dados)
+
   cat("============================================================\n")
-  cat("[EXPORTACAO] Exportação finalizada com sucesso!\n")
-  cat("[EXPORTACAO] Arquivo:", filepath, "\n")
+  cat("[EXPORTACAO] Finalizada com sucesso\n")
+  cat("[EXPORTACAO] Arquivo:", caminho, "\n")
   cat("============================================================\n")
-  
 }, error = function(e) {
   cat("[EXPORTACAO] Erro fatal:", conditionMessage(e), "\n")
   quit(status = 1)
